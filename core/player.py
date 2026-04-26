@@ -7,6 +7,7 @@ class Player:
     id: str
     name: str
     rps_bag: Dict[str, int]          # 出拳包是必须的
+    faction: str = "rock"
 
     # 带默认值的字段
     health: int = 20

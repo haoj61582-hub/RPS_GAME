@@ -1,9 +1,12 @@
-import os
-from server.game_server import start_server
-from client.game_client import start_client
+import sys
 
-if __name__ == "__main__":
-    print("=== RPS Battlegrounds ===\n")
+from client.game_client import start_client
+from gui.app import launch_app
+from server.game_server import start_server
+
+
+def run_cli_mode():
+    print("=== RPS Battlegrounds · CLI 模式 ===\n")
     print("1. 创建服务器（房主）")
     print("2. 加入游戏（客人）")
     mode = input("请选择 (1/2): ").strip()
@@ -17,3 +20,10 @@ if __name__ == "__main__":
         start_client(name, ip)
     else:
         print("输入错误，程序退出")
+
+
+if __name__ == "__main__":
+    if "--cli" in sys.argv:
+        run_cli_mode()
+    else:
+        launch_app()

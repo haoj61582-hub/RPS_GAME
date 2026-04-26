@@ -183,7 +183,7 @@ def start_client(name, server_ip):
     log("✅ 已连接到服务器", "green")
 
     # 发送名字
-    send_message(client, {"name": name})
+    send_message(client, {"name": name, "faction": "rock"})
 
     while True:
         msg = receive_message(client)

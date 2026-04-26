@@ -2,6 +2,7 @@ import json
 import random
 from utils.logger import log
 from server.network import send_message, get_message, clients   # ← 补全 clients 和 get_message
+from utils.resources import data_path
 
 
 RARITY_WEIGHTS = {
@@ -13,11 +14,11 @@ RARITY_WEIGHTS = {
 TALENT_SLOT_RATE = 0.20
 
 def load_shop_items():
-    with open("data/items.json", encoding="utf-8") as f:
+    with data_path("items.json").open(encoding="utf-8") as f:
         return json.load(f)["items"]
 
 def load_shop_talents():
-    with open("data/talents.json", encoding="utf-8") as f:
+    with data_path("talents.json").open(encoding="utf-8") as f:
         return json.load(f)["talents"]
 
 
@@ -165,6 +166,7 @@ def show_shop(player, health_overview=None):
             "interest_rate": player.interest_rate,
             "win_streak": player.win_streak,
             "lose_streak": player.lose_streak,
+            "your_faction": player.faction,
             "shop_slots": player.shop_slots,
             "refresh_cost": next_refresh_cost,
             "health_overview": health_overview or [],
@@ -236,6 +238,7 @@ def show_shop(player, health_overview=None):
             "interest_rate": player.interest_rate,
             "win_streak": player.win_streak,
             "lose_streak": player.lose_streak,
+            "your_faction": player.faction,
             "shop_slots": player.shop_slots,
             "refresh_cost": _refresh_cost(refresh_count),
             "offers": current_offers,
