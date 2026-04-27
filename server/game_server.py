@@ -79,6 +79,7 @@ class GameServer:
         )
         self.game_thread = None
         self.game_started = False
+        self.game_finished = threading.Event()
         self.stopped = threading.Event()
 
     def start(self):
@@ -131,7 +132,7 @@ class GameServer:
             self.game_thread.start()
 
     def _on_player_disconnect(self, player):
-        if self.stopped.is_set():
+        if self.stopped.is_set() or self.game_finished.is_set():
             return
 
         if not self.game_started:
@@ -219,6 +220,7 @@ class GameServer:
 
         winner = next((p for p in self.game_state.players if not p.is_eliminated), None)
         winner_name = winner.name if winner else "未知"
+        self.game_finished.set()
         log(f"\n🏆 游戏结束！最终胜利者是：{winner_name} 🎉", "green")
 
         broadcast_message({
