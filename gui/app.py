@@ -76,6 +76,17 @@ def rarity_name(rarity):
     return mapping.get((rarity or "").lower(), "普通")
 
 
+def choice_accent(choice):
+    mapping = {
+        "rock": ACCENT,
+        "scissors": ACCENT_2,
+        "paper": WARNING,
+        "none": MUTED,
+        None: MUTED,
+    }
+    return mapping.get(choice, BORDER)
+
+
 class BattlegroundApp(tk.Tk):
     def __init__(self):
         super().__init__()
@@ -111,6 +122,9 @@ class BattlegroundApp(tk.Tk):
         self.final_result = None
         self.current_battle = None
         self.current_shop = None
+        self.current_round_score = {"you": 0, "opponent": 0}
+        self.last_round_snapshot = None
+        self.last_match_snapshot = None
         self._rendered_screen = None
         self.guide_window = None
         self.phase_title = "待命中"
@@ -302,6 +316,7 @@ class BattlegroundApp(tk.Tk):
 
     def _handle_message(self, message):
         msg_type = message.get("type")
+        previous_health = self.player_state.get("health", 20)
         self._sync_player_state(message)
         player_name = self._local_player_name()
 
@@ -318,6 +333,9 @@ class BattlegroundApp(tk.Tk):
         elif msg_type == "game_start":
             self.screen = "game"
             self.awaiting_action = False
+            self.current_round_score = {"you": 0, "opponent": 0}
+            self.last_round_snapshot = None
+            self.last_match_snapshot = None
             players = " / ".join(message.get("players", []))
             self.latest_notice = f"全员已就位，战斗开始：{players}"
             self.status_var.set("战斗开始")
@@ -328,7 +346,16 @@ class BattlegroundApp(tk.Tk):
 
         elif msg_type == "choose_rps":
             self.screen = "game"
-            self.current_battle = message
+            if message.get("round_no", 1) == 1:
+                self.current_round_score = {"you": 0, "opponent": 0}
+                self.last_round_snapshot = None
+            self.last_match_snapshot = None
+            self.current_battle = {
+                **message,
+                "score_you": self.current_round_score.get("you", 0),
+                "score_opponent": self.current_round_score.get("opponent", 0),
+                "round_locked": False,
+            }
             self.current_shop = None
             self.awaiting_action = False
             self.selected_item_id = None
@@ -345,17 +372,26 @@ class BattlegroundApp(tk.Tk):
 
         elif msg_type == "round_result":
             winner = message.get("round_winner")
+            self.current_round_score = {
+                "you": message.get("score_you", 0),
+                "opponent": message.get("score_opponent", 0),
+            }
             if winner:
                 self.latest_notice = f"小局胜者：{winner}，比分 {message.get('score_you', 0)}:{message.get('score_opponent', 0)}"
             else:
                 self.latest_notice = f"本小局平局/无效，比分 {message.get('score_you', 0)}:{message.get('score_opponent', 0)}"
             self.status_var.set("回合结算")
-            self.awaiting_action = False
-            round_detail = (
+            self.awaiting_action = True
+            round_detail_parts = [
                 f"你出 {short_rps_name(message.get('your_choice'))}，"
                 f"对手出 {short_rps_name(message.get('opponent_choice'))}，"
                 f"当前比分 {message.get('score_you', 0)}:{message.get('score_opponent', 0)}"
-            )
+            ]
+            if message.get("item_used_you"):
+                round_detail_parts.append(f"你触发了 {message.get('item_used_you')}")
+            if message.get("item_used_opponent"):
+                round_detail_parts.append(f"对手触发了 {message.get('item_used_opponent')}")
+            round_detail = "，".join(round_detail_parts)
             self._append_log(
                 f"{round_detail}。{self.latest_notice}"
             )
@@ -368,19 +404,54 @@ class BattlegroundApp(tk.Tk):
             else:
                 tone = "danger"
                 title = f"{winner} 赢下了这一小局"
+            self.last_round_snapshot = {
+                "title": title,
+                "tone": tone,
+                "round_no": message.get("round_no", 1),
+                "max_rounds": message.get("max_rounds", 5),
+                "your_choice": message.get("your_choice"),
+                "opponent_choice": message.get("opponent_choice"),
+                "score_you": message.get("score_you", 0),
+                "score_opponent": message.get("score_opponent", 0),
+                "item_used_you": message.get("item_used_you"),
+                "item_used_opponent": message.get("item_used_opponent"),
+                "opponent": (self.current_battle or {}).get("opponent", "对手"),
+                "opponent_faction": message.get("opponent_faction"),
+            }
+            if self.current_battle:
+                self.current_battle = {
+                    **self.current_battle,
+                    "score_you": message.get("score_you", 0),
+                    "score_opponent": message.get("score_opponent", 0),
+                    "round_locked": True,
+                }
             self._add_feed_item(title, round_detail, tone=tone)
-            self._set_phase("回合结算", "查看本小局结果，下一小局会继续推进对战比分。")
+            self._set_phase("回合结算", "本小局结果已经揭示，旧输入已锁定。等待下一手开始，继续争夺比分优势。")
 
         elif msg_type == "match_result":
             result = message.get("result")
             result_map = {"win": "本场胜利", "lose": "本场失利", "draw": "本场平局"}
             self.current_battle = None
             self.awaiting_action = False
+            self.last_round_snapshot = None
             self.latest_notice = f"{result_map.get(result, '本场结束')}，比分 {message.get('score_you', 0)}:{message.get('score_opponent', 0)}"
             self.status_var.set("对战结束")
             self._append_log(self.latest_notice)
-            match_detail = f"本场比分 {message.get('score_you', 0)}:{message.get('score_opponent', 0)}，当前血量 {message.get('your_health', 0)}"
+            health_after = message.get("your_health", previous_health)
+            health_loss = max(0, previous_health - health_after)
+            health_text = f"承受 {health_loss} 点伤害" if health_loss else "血量未变化"
+            match_detail = f"本场比分 {message.get('score_you', 0)}:{message.get('score_opponent', 0)}，{health_text}，当前血量 {health_after}"
             match_tone = {"win": "success", "lose": "danger", "draw": "warning"}.get(result, "accent")
+            self.last_match_snapshot = {
+                "title": result_map.get(result, "对战结束"),
+                "tone": match_tone,
+                "score_you": message.get("score_you", 0),
+                "score_opponent": message.get("score_opponent", 0),
+                "health_after": health_after,
+                "health_loss": health_loss,
+                "opponent_faction": message.get("opponent_faction"),
+                "winner": message.get("winner"),
+            }
             self._add_feed_item(result_map.get(result, "对战结束"), match_detail, tone=match_tone)
             self._set_phase("本场结束", "本场对战已经结算，接下来会进入经济结算与商店阶段。")
 
@@ -435,6 +506,7 @@ class BattlegroundApp(tk.Tk):
             self.current_battle = None
             self.current_shop = None
             self.awaiting_action = False
+            self.last_round_snapshot = None
             self.status_var.set("对局结束")
             self.latest_notice = f"冠军诞生：{message.get('winner', '未知')}"
             self.banner_var.set("这场联机对局已经完成，可以返回首页重新开房")
@@ -633,6 +705,177 @@ class BattlegroundApp(tk.Tk):
             "danger": DANGER,
         }
         return mapping.get(tone, ACCENT)
+
+    def _score_state_text(self, score_you, score_opponent):
+        if score_you > score_opponent:
+            return "你暂时领先"
+        if score_you < score_opponent:
+            return "对手暂时领先"
+        return "当前比分持平"
+
+    def _render_scoreboard(self, parent, score_you, score_opponent):
+        board = tk.Frame(
+            parent,
+            bg=CARD_BG,
+            highlightbackground=BORDER,
+            highlightthickness=1,
+            padx=14,
+            pady=12,
+        )
+        board.pack(fill="x", pady=(0, 14))
+
+        top = tk.Frame(board, bg=CARD_BG)
+        top.pack(fill="x")
+        tk.Label(top, text="当前比分", bg=CARD_BG, fg=MUTED, font=("Avenir Next", 10, "bold")).pack(side="left")
+        tk.Label(
+            top,
+            text=self._score_state_text(score_you, score_opponent),
+            bg=CARD_BG,
+            fg=TEXT,
+            font=("Avenir Next", 10, "bold"),
+        ).pack(side="right")
+
+        score_row = tk.Frame(board, bg=CARD_BG)
+        score_row.pack(fill="x", pady=(12, 0))
+
+        def score_tile(container, label, score, color):
+            tile = tk.Frame(
+                container,
+                bg=PANEL_BG,
+                highlightbackground=color,
+                highlightthickness=1,
+                padx=16,
+                pady=12,
+            )
+            tile.pack(side="left", fill="x", expand=True)
+            tk.Label(tile, text=label, bg=PANEL_BG, fg=MUTED, font=("Avenir Next", 10, "bold")).pack(anchor="w")
+            tk.Label(tile, text=str(score), bg=PANEL_BG, fg=color, font=("Avenir Next", 28, "bold")).pack(anchor="w", pady=(6, 0))
+
+        score_tile(score_row, "你", score_you, SUCCESS if score_you >= score_opponent else TEXT)
+        tk.Label(score_row, text="VS", bg=CARD_BG, fg=MUTED, font=("Avenir Next", 12, "bold"), padx=10).pack(side="left")
+        score_tile(score_row, "对手", score_opponent, DANGER if score_opponent > score_you else TEXT)
+
+    def _render_round_spotlight(self, parent):
+        snapshot = self.last_round_snapshot
+        if not snapshot:
+            return
+
+        tone_color = self._accent_color(snapshot.get("tone"))
+        card = tk.Frame(
+            parent,
+            bg=CARD_BG,
+            highlightbackground=tone_color,
+            highlightthickness=1,
+            padx=14,
+            pady=12,
+        )
+        card.pack(fill="x", pady=(0, 14))
+
+        top = tk.Frame(card, bg=CARD_BG)
+        top.pack(fill="x")
+        tk.Label(top, text="上一手回放", bg=CARD_BG, fg=MUTED, font=("Avenir Next", 10, "bold")).pack(side="left")
+        tk.Label(
+            top,
+            text=snapshot.get("title", "小局结算"),
+            bg=CARD_BG,
+            fg=tone_color,
+            font=("Avenir Next", 13, "bold"),
+        ).pack(side="right")
+
+        tk.Label(
+            card,
+            text=f"第 {snapshot.get('round_no', 1)}/{snapshot.get('max_rounds', 5)} 小局",
+            bg=CARD_BG,
+            fg=TEXT,
+            font=("Avenir Next", 11),
+        ).pack(anchor="w", pady=(8, 10))
+
+        duel = tk.Frame(card, bg=CARD_BG)
+        duel.pack(fill="x")
+
+        def reveal_tile(container, title, choice, item_used):
+            tile = tk.Frame(
+                container,
+                bg=PANEL_BG,
+                highlightbackground=choice_accent(choice),
+                highlightthickness=1,
+                padx=12,
+                pady=12,
+            )
+            tile.pack(side="left", fill="both", expand=True)
+            tk.Label(tile, text=title, bg=PANEL_BG, fg=MUTED, font=("Avenir Next", 10, "bold")).pack(anchor="w")
+            tk.Label(
+                tile,
+                text=short_rps_name(choice),
+                bg=PANEL_BG,
+                fg=choice_accent(choice),
+                font=("Avenir Next", 18, "bold"),
+            ).pack(anchor="w", pady=(8, 0))
+            tk.Label(
+                tile,
+                text=f"道具：{item_used or '未触发'}",
+                bg=PANEL_BG,
+                fg=TEXT,
+                justify="left",
+                wraplength=220,
+                font=("Avenir Next", 10),
+            ).pack(anchor="w", pady=(8, 0))
+
+        reveal_tile(duel, "你的出拳", snapshot.get("your_choice"), snapshot.get("item_used_you"))
+        tk.Label(duel, text="VS", bg=CARD_BG, fg=MUTED, font=("Avenir Next", 12, "bold"), padx=10).pack(side="left")
+        reveal_tile(duel, snapshot.get("opponent", "对手"), snapshot.get("opponent_choice"), snapshot.get("item_used_opponent"))
+
+        tk.Label(
+            card,
+            text=f"比分更新为 {snapshot.get('score_you', 0)} : {snapshot.get('score_opponent', 0)}",
+            bg=CARD_BG,
+            fg=TEXT,
+            font=("Avenir Next", 11, "bold"),
+        ).pack(anchor="w", pady=(10, 0))
+
+    def _render_match_spotlight(self, parent):
+        snapshot = self.last_match_snapshot
+        if not snapshot:
+            return
+
+        tone_color = self._accent_color(snapshot.get("tone"))
+        card = tk.Frame(
+            parent,
+            bg=CARD_BG,
+            highlightbackground=tone_color,
+            highlightthickness=1,
+            padx=14,
+            pady=12,
+        )
+        card.pack(fill="x", pady=(0, 14))
+
+        tk.Label(card, text="上一场战斗结算", bg=CARD_BG, fg=MUTED, font=("Avenir Next", 10, "bold")).pack(anchor="w")
+        tk.Label(
+            card,
+            text=snapshot.get("title", "对战结束"),
+            bg=CARD_BG,
+            fg=tone_color,
+            font=("Avenir Next", 16, "bold"),
+        ).pack(anchor="w", pady=(8, 0))
+        tk.Label(
+            card,
+            text=f"最终比分 {snapshot.get('score_you', 0)} : {snapshot.get('score_opponent', 0)}",
+            bg=CARD_BG,
+            fg=TEXT,
+            font=("Avenir Next", 11, "bold"),
+        ).pack(anchor="w", pady=(8, 0))
+
+        health_loss = snapshot.get("health_loss", 0)
+        health_line = f"你承受了 {health_loss} 点伤害" if health_loss else "这场战斗没有让你掉血"
+        tk.Label(
+            card,
+            text=f"{health_line}，当前血量 {snapshot.get('health_after', 0)}",
+            bg=CARD_BG,
+            fg=TEXT,
+            justify="left",
+            wraplength=540,
+            font=("Avenir Next", 11),
+        ).pack(anchor="w", pady=(6, 0))
 
     def _open_guide(self):
         if self.guide_window and self.guide_window.winfo_exists():
@@ -1357,6 +1600,9 @@ class BattlegroundApp(tk.Tk):
             font=("Avenir Next", 18, "bold"),
         ).pack(anchor="w")
 
+        self._render_scoreboard(parent, msg.get("score_you", 0), msg.get("score_opponent", 0))
+        self._render_round_spotlight(parent)
+
         items = msg.get("items", [])
         if items:
             tk.Label(
@@ -1384,6 +1630,7 @@ class BattlegroundApp(tk.Tk):
         bag = msg.get("bag", {})
         choices = tk.Frame(parent, bg=PANEL_BG)
         choices.pack(fill="x", pady=(8, 8))
+        round_locked = msg.get("round_locked", False)
 
         for choice, color in (
             ("rock", ACCENT),
@@ -1398,7 +1645,7 @@ class BattlegroundApp(tk.Tk):
                 bg=color,
                 width=16,
             )
-            if self.awaiting_action or count <= 0:
+            if self.awaiting_action or count <= 0 or round_locked:
                 button.configure(state="disabled", cursor="arrow")
             button.pack(side="left", padx=(0, 10), pady=8)
 
@@ -1410,7 +1657,15 @@ class BattlegroundApp(tk.Tk):
             font=("Avenir Next", 12),
         ).pack(anchor="w", pady=(8, 0))
 
-        if self.awaiting_action:
+        if round_locked:
+            tk.Label(
+                parent,
+                text="本小局结算中，旧输入已锁定。下一手开始后会自动解锁。",
+                bg=PANEL_BG,
+                fg=WARNING,
+                font=("Avenir Next", 12, "italic"),
+            ).pack(anchor="w", pady=(12, 0))
+        elif self.awaiting_action:
             tk.Label(
                 parent,
                 text="已提交出拳，正在等待其他玩家…",
@@ -1421,6 +1676,8 @@ class BattlegroundApp(tk.Tk):
 
     def _render_shop_panel(self, parent):
         msg = self.current_shop or {}
+        self._render_match_spotlight(parent)
+
         header = tk.Frame(parent, bg=PANEL_BG)
         header.pack(fill="x", pady=(0, 12))
 
@@ -1498,6 +1755,7 @@ class BattlegroundApp(tk.Tk):
             tk.Label(parent, text="本轮没有可购买内容。", bg=PANEL_BG, fg=MUTED, font=("Avenir Next", 12)).pack(anchor="w")
 
     def _render_waiting_panel(self, parent):
+        self._render_match_spotlight(parent)
         tk.Label(
             parent,
             text=self.latest_notice,
@@ -1688,6 +1946,9 @@ class BattlegroundApp(tk.Tk):
         self.selected_item_id = None
         self.current_battle = None
         self.current_shop = None
+        self.current_round_score = {"you": 0, "opponent": 0}
+        self.last_round_snapshot = None
+        self.last_match_snapshot = None
         self.final_result = None
         self.recent_feed = []
         self.status_var.set("准备就绪")
