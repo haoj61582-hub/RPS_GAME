@@ -6,8 +6,8 @@ import random
 
 def _build_health_overview(p1, p2):
     return [
-        {"name": p1.name, "health": p1.health, "is_eliminated": p1.is_eliminated},
-        {"name": p2.name, "health": p2.health, "is_eliminated": p2.is_eliminated},
+        {"name": p1.name, "health": p1.health, "is_eliminated": p1.is_eliminated, "faction": getattr(p1, "faction", "rock")},
+        {"name": p2.name, "health": p2.health, "is_eliminated": p2.is_eliminated, "faction": getattr(p2, "faction", "rock")},
     ]
 
 def _has_available_rps(player):
@@ -73,6 +73,23 @@ def _gain_gold_in_battle(player, amount):
     
     if _has_talent_effect(player, "battle_gold_to_random_bag"):
         _add_random_rps(player, amount)
+
+
+def _passive_effect_text(effect_type):
+    mapping = {
+        "rock_guard": "磐岩壁垒【岩甲】使本场伤害 -1",
+        "scissors_bounty": "迅刃风暴【先手赏金】首次剪刀胜利 +1 金币",
+    }
+    return mapping.get(effect_type)
+
+
+def _append_passive_note(bucket, player_id, effect_type):
+    text = _passive_effect_text(effect_type)
+    if not text:
+        return
+    bucket.setdefault(player_id, [])
+    if text not in bucket[player_id]:
+        bucket[player_id].append(text)
 
 
 def _apply_talent_match_start(player):
@@ -209,9 +226,11 @@ def _send_round_result(
     round_no,
     max_rounds,
     item_used_1,
-    item_used_2
+    item_used_2,
+    passive_notes=None
 ):
     health_overview = _build_health_overview(p1, p2)
+    passive_notes = passive_notes or {}
     send_message(clients[p1.id], {
         "type": "round_result",
         "your_choice": choice1,
@@ -225,6 +244,8 @@ def _send_round_result(
         "score_opponent": score2,
         "item_used_you": item_used_1,
         "item_used_opponent": item_used_2,
+        "faction_effect_you": "；".join(passive_notes.get(p1.id, [])) or None,
+        "faction_effect_opponent": "；".join(passive_notes.get(p2.id, [])) or None,
         "your_health": p1.health,
         "opponent_health": p2.health,
         "your_gold": p1.gold,
@@ -248,6 +269,8 @@ def _send_round_result(
         "score_opponent": score1,
         "item_used_you": item_used_2,
         "item_used_opponent": item_used_1,
+        "faction_effect_you": "；".join(passive_notes.get(p2.id, [])) or None,
+        "faction_effect_opponent": "；".join(passive_notes.get(p1.id, [])) or None,
         "your_health": p2.health,
         "opponent_health": p1.health,
         "your_gold": p2.gold,
@@ -260,8 +283,9 @@ def _send_round_result(
     })
 
 
-def _send_match_result(winner, loser, score1, score2, is_draw=False):
+def _send_match_result(winner, loser, score1, score2, is_draw=False, damage_dealt=0, passive_notes=None):
     health_overview = _build_health_overview(winner, loser)
+    passive_notes = passive_notes or {}
     if is_draw:
         send_message(clients[winner.id], {
             "type": "match_result",
@@ -270,6 +294,10 @@ def _send_match_result(winner, loser, score1, score2, is_draw=False):
             "loser": None,
             "your_faction": winner.faction,
             "opponent_faction": loser.faction,
+            "faction_effect_you": None,
+            "faction_effect_opponent": None,
+            "damage_taken": 0,
+            "damage_dealt": 0,
             "score_you": score1,
             "score_opponent": score2,
             "your_health": winner.health,
@@ -289,6 +317,10 @@ def _send_match_result(winner, loser, score1, score2, is_draw=False):
             "loser": None,
             "your_faction": loser.faction,
             "opponent_faction": winner.faction,
+            "faction_effect_you": None,
+            "faction_effect_opponent": None,
+            "damage_taken": 0,
+            "damage_dealt": 0,
             "score_you": score2,
             "score_opponent": score1,
             "your_health": loser.health,
@@ -310,6 +342,10 @@ def _send_match_result(winner, loser, score1, score2, is_draw=False):
         "loser": loser.name,
         "your_faction": winner.faction,
         "opponent_faction": loser.faction,
+        "faction_effect_you": "；".join(passive_notes.get(winner.id, [])) or None,
+        "faction_effect_opponent": "；".join(passive_notes.get(loser.id, [])) or None,
+        "damage_taken": 0,
+        "damage_dealt": damage_dealt,
         "score_you": max(score1, score2),
         "score_opponent": min(score1, score2),
         "your_health": winner.health,
@@ -329,6 +365,10 @@ def _send_match_result(winner, loser, score1, score2, is_draw=False):
         "loser": loser.name,
         "your_faction": loser.faction,
         "opponent_faction": winner.faction,
+        "faction_effect_you": "；".join(passive_notes.get(loser.id, [])) or None,
+        "faction_effect_opponent": "；".join(passive_notes.get(winner.id, [])) or None,
+        "damage_taken": damage_dealt,
+        "damage_dealt": 0,
         "score_you": min(score1, score2),
         "score_opponent": max(score1, score2),
         "your_health": loser.health,
@@ -341,6 +381,48 @@ def _send_match_result(winner, loser, score1, score2, is_draw=False):
         "your_lose_streak": loser.lose_streak,
         "health_overview": health_overview
     })
+
+
+def _apply_scissors_faction_passive(winner, choice, match_state, round_passive_notes):
+    if winner.faction != "scissors" or choice != "scissors":
+        return
+
+    faction_flags = match_state.setdefault("faction_flags", {}).setdefault("scissors_bounty_used", {})
+    if faction_flags.get(winner.id):
+        return
+
+    faction_flags[winner.id] = True
+    _gain_gold_in_battle(winner, 1)
+    _append_passive_note(round_passive_notes, winner.id, "scissors_bounty")
+    log(f"{winner.name} 【迅刃风暴】首次剪刀胜利，额外获得 1 金币", "cyan")
+
+
+def _resolve_match_damage(winner, loser, match_state):
+    passive_notes = {winner.id: [], loser.id: []}
+    damage = winner.attack
+    if _has_talent_effect(winner, "double_damage_on_win"):
+        damage *= 2
+
+    damage += match_state["damage_bonus"].get(winner.id, 0)
+
+    if _has_talent_effect(winner, "scissors_count_damage_bonus"):
+        scissors_count = winner.rps_bag.get("scissors", 0)
+        extra = (scissors_count // 2) * _talent_total(winner, "scissors_count_damage_bonus")
+        damage += extra
+        log(f"{winner.name} 【物尽其用】额外伤害 +{extra}（{scissors_count}剪刀）", "red")
+
+    if loser.faction == "rock" and damage > 0:
+        damage = max(0, damage - 1)
+        _append_passive_note(passive_notes, loser.id, "rock_guard")
+        log(f"{loser.name} 【磐岩壁垒】岩甲生效，本场伤害 -1", "yellow")
+
+    loser.health -= damage
+    if loser.health <= 0:
+        loser.health = 0
+        loser.is_eliminated = True
+        log(f"💀 {loser.name} 被淘汰！", "red")
+
+    return damage, passive_notes
 
 
 def run_match(p1, p2):
@@ -361,13 +443,17 @@ def run_match(p1, p2):
         "score_swing": {p1.id: p1.pending_score_swing, p2.id: p2.pending_score_swing},
         "last_rock_trigger": {p1.id: False, p2.id: False},
         "damage_bonus": {p1.id: 0, p2.id: 0},   # 新增
-        "last_choice": {p1.id: None, p2.id: None}  # 用于连招
+        "last_choice": {p1.id: None, p2.id: None},  # 用于连招
+        "faction_flags": {
+            "scissors_bounty_used": {p1.id: False, p2.id: False},
+        },
     }
     p1.pending_score_swing = 0
     p2.pending_score_swing = 0
     log(f"\n=== {p1.name} VS {p2.name} 开始 ===", "cyan")
 
     while score1 < 3 and score2 < 3 and rounds_played < max_rounds:
+        round_passive_notes = {p1.id: [], p2.id: []}
         health_overview = _build_health_overview(p1, p2)
         send_message(clients[p1.id], {
             "type": "choose_rps",
@@ -461,7 +547,7 @@ def run_match(p1, p2):
             log("平局！双方出拳相同", "yellow")
             _send_round_result(
                 p1, p2, choice1, choice2, score1, score2, None,
-                rounds_played, max_rounds, item_used_1, item_used_2
+                rounds_played, max_rounds, item_used_1, item_used_2, round_passive_notes
             )
             if match_state["last_rock_trigger"][p1.id]:
                 _convert_random_non_rock_to_rock(p1)
@@ -487,6 +573,7 @@ def run_match(p1, p2):
                 _handle_paper_win_effects(p1, p2, match_state)
             if choice1 == "scissors":
                 _handle_scissors_win_effects(p1, p2, match_state)
+            _apply_scissors_faction_passive(p1, choice1, match_state, round_passive_notes)
             match_state["round_bonus"][p1.id] = 0
             if match_state["score_swing"][p1.id] > 0:
                 match_state["score_swing"][p1.id] = 0
@@ -496,7 +583,7 @@ def run_match(p1, p2):
             log(f"{p1.name} 获胜本小局！({score1}:{score2})", "green")
             _send_round_result(
                 p1, p2, choice1, choice2, score1, score2, p1.name,
-                rounds_played, max_rounds, item_used_1, item_used_2
+                rounds_played, max_rounds, item_used_1, item_used_2, round_passive_notes
             )
         elif choice1 and choice2:
             _handle_consecutive_choice(p2, match_state["last_choice"][p2.id], choice2)
@@ -513,6 +600,7 @@ def run_match(p1, p2):
                 _handle_paper_win_effects(p2, p1, match_state)
             if choice2 == "scissors":
                 _handle_scissors_win_effects(p2, p1, match_state)
+            _apply_scissors_faction_passive(p2, choice2, match_state, round_passive_notes)
             match_state["round_bonus"][p2.id] = 0
             if match_state["score_swing"][p2.id] > 0:
                 match_state["score_swing"][p2.id] = 0
@@ -522,13 +610,13 @@ def run_match(p1, p2):
             log(f"{p2.name} 获胜本小局！({score1}:{score2})", "green")
             _send_round_result(
                 p1, p2, choice1, choice2, score1, score2, p2.name,
-                rounds_played, max_rounds, item_used_1, item_used_2
+                rounds_played, max_rounds, item_used_1, item_used_2, round_passive_notes
             )
         else:
             log("本小局因无效出拳跳过", "yellow")
             _send_round_result(
                 p1, p2, choice1, choice2, score1, score2, None,
-                rounds_played, max_rounds, item_used_1, item_used_2
+                rounds_played, max_rounds, item_used_1, item_used_2, round_passive_notes
             )
 
         if match_state["last_rock_trigger"][p1.id]:
@@ -549,40 +637,25 @@ def run_match(p1, p2):
     if score1 >= 3:
         winner, loser = p1, p2
         log(f"\n🎉 {winner.name} 赢得本场对战！", "green")
-        _send_match_result(winner, loser, score1, score2)
 
     elif score2 >= 3:
         winner, loser = p2, p1
         log(f"\n🎉 {winner.name} 赢得本场对战！", "green")
-        _send_match_result(winner, loser, score1, score2)
 
     elif score1 > score2:
         winner, loser = p1, p2
         log(f"\n⏱️ 5回合结束，{winner.name} 以比分优势获胜！", "green")
-        _send_match_result(winner, loser, score1, score2)
 
     elif score2 > score1:
         winner, loser = p2, p1
         log(f"\n⏱️ 5回合结束，{winner.name} 以比分优势获胜！", "green")
-        _send_match_result(winner, loser, score1, score2)
     
     else:
         log("\n⏱️ 5回合结束，双方平局，本场不掉血", "yellow")
         _send_match_result(p1, p2, score1, score2, is_draw=True)
         return p1, p2, True
-    
-    damage = winner.attack
-    if _has_talent_effect(winner, "double_damage_on_win"):
-        damage *= 2
 
-    damage += match_state["damage_bonus"].get(winner.id, 0)
-
-    if _has_talent_effect(winner, "scissors_count_damage_bonus"):
-        scissors_count = winner.rps_bag.get("scissors", 0)
-        extra = (scissors_count // 2) * _talent_total(winner, "scissors_count_damage_bonus")
-        damage += extra
-        log(f"{winner.name} 【物尽其用】额外伤害 +{extra}（{scissors_count}剪刀）", "red")
-
-    loser.health -= damage
+    damage, passive_notes = _resolve_match_damage(winner, loser, match_state)
+    _send_match_result(winner, loser, score1, score2, damage_dealt=damage, passive_notes=passive_notes)
 
     return winner, loser, False

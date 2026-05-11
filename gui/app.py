@@ -29,6 +29,9 @@ FACTIONS = {
         "style": "重甲 / 韧性 / 压迫",
         "subtitle": "由黑曜岩甲与余烬核心铸成的前线军团，风格稳重强硬，擅长正面碾压。",
         "motto": "裂岩不退，王座不让。",
+        "passive_name": "岩甲",
+        "passive_short": "每场战败少掉 1 血",
+        "passive_desc": "每次输掉一场完整对战时，最终承受的伤害减少 1 点。",
         "accent": "#F2A65A",
     },
     "scissors": {
@@ -37,6 +40,9 @@ FACTIONS = {
         "style": "机动 / 猎杀 / 先手",
         "subtitle": "以翠锋双刃与疾影战法闻名的决斗派系，追求节奏、精度与一击制胜。",
         "motto": "风过无痕，锋至分胜负。",
+        "passive_name": "先手赏金",
+        "passive_short": "每场首次剪刀胜利 +1 金",
+        "passive_desc": "每场对战中，第一次用剪刀赢下小局时额外获得 1 金币。",
         "accent": "#49D4B1",
     },
     "paper": {
@@ -45,6 +51,9 @@ FACTIONS = {
         "style": "谋略 / 奥术 / 控局",
         "subtitle": "操纵符纸阵列与折叠秘术的法印教团，偏好用布局与资源差拿下全局。",
         "motto": "以墨定局，以印封喉。",
+        "passive_name": "策纸采购",
+        "passive_short": "每个商店阶段首刷免费",
+        "passive_desc": "每个商店阶段第一次刷新免费，之后再从 1 金开始递增。",
         "accent": "#E8D8A8",
     },
 }
@@ -391,6 +400,10 @@ class BattlegroundApp(tk.Tk):
                 round_detail_parts.append(f"你触发了 {message.get('item_used_you')}")
             if message.get("item_used_opponent"):
                 round_detail_parts.append(f"对手触发了 {message.get('item_used_opponent')}")
+            if message.get("faction_effect_you"):
+                round_detail_parts.append(f"你的被动：{message.get('faction_effect_you')}")
+            if message.get("faction_effect_opponent"):
+                round_detail_parts.append(f"对手被动：{message.get('faction_effect_opponent')}")
             round_detail = "，".join(round_detail_parts)
             self._append_log(
                 f"{round_detail}。{self.latest_notice}"
@@ -417,6 +430,8 @@ class BattlegroundApp(tk.Tk):
                 "item_used_opponent": message.get("item_used_opponent"),
                 "opponent": (self.current_battle or {}).get("opponent", "对手"),
                 "opponent_faction": message.get("opponent_faction"),
+                "faction_effect_you": message.get("faction_effect_you"),
+                "faction_effect_opponent": message.get("faction_effect_opponent"),
             }
             if self.current_battle:
                 self.current_battle = {
@@ -436,11 +451,22 @@ class BattlegroundApp(tk.Tk):
             self.last_round_snapshot = None
             self.latest_notice = f"{result_map.get(result, '本场结束')}，比分 {message.get('score_you', 0)}:{message.get('score_opponent', 0)}"
             self.status_var.set("对战结束")
-            self._append_log(self.latest_notice)
             health_after = message.get("your_health", previous_health)
-            health_loss = max(0, previous_health - health_after)
+            health_loss = message["damage_taken"] if "damage_taken" in message else max(0, previous_health - health_after)
             health_text = f"承受 {health_loss} 点伤害" if health_loss else "血量未变化"
-            match_detail = f"本场比分 {message.get('score_you', 0)}:{message.get('score_opponent', 0)}，{health_text}，当前血量 {health_after}"
+            match_detail_parts = [
+                f"本场比分 {message.get('score_you', 0)}:{message.get('score_opponent', 0)}",
+                health_text,
+                f"当前血量 {health_after}",
+            ]
+            if message.get("damage_dealt"):
+                match_detail_parts.append(f"你造成了 {message.get('damage_dealt', 0)} 点伤害")
+            if message.get("faction_effect_you"):
+                match_detail_parts.append(f"你的被动：{message.get('faction_effect_you')}")
+            if message.get("faction_effect_opponent"):
+                match_detail_parts.append(f"对手被动：{message.get('faction_effect_opponent')}")
+            match_detail = "，".join(match_detail_parts)
+            self._append_log(f"{self.latest_notice}。{match_detail}")
             match_tone = {"win": "success", "lose": "danger", "draw": "warning"}.get(result, "accent")
             self.last_match_snapshot = {
                 "title": result_map.get(result, "对战结束"),
@@ -449,8 +475,11 @@ class BattlegroundApp(tk.Tk):
                 "score_opponent": message.get("score_opponent", 0),
                 "health_after": health_after,
                 "health_loss": health_loss,
+                "damage_dealt": message.get("damage_dealt", 0),
                 "opponent_faction": message.get("opponent_faction"),
                 "winner": message.get("winner"),
+                "faction_effect_you": message.get("faction_effect_you"),
+                "faction_effect_opponent": message.get("faction_effect_opponent"),
             }
             self._add_feed_item(result_map.get(result, "对战结束"), match_detail, tone=match_tone)
             self._set_phase("本场结束", "本场对战已经结算，接下来会进入经济结算与商店阶段。")
@@ -486,10 +515,18 @@ class BattlegroundApp(tk.Tk):
             self.current_shop = message
             self.current_battle = None
             self.awaiting_action = False
-            self.latest_notice = "商店已开启，选择购买、刷新，或直接结束商店阶段。"
+            effect_text = message.get("faction_effect_you")
+            self.latest_notice = (
+                f"商店已开启，{effect_text}。选择购买、刷新，或直接结束商店阶段。"
+                if effect_text
+                else "商店已开启，选择购买、刷新，或直接结束商店阶段。"
+            )
             self.status_var.set("商店阶段")
-            self._append_log("进入商店阶段。")
-            self._add_feed_item("商店开启", f"当前金币 {message.get('gold', 0)}，可用槽位 {message.get('shop_slots', 4)}", tone="accent")
+            self._append_log("进入商店阶段。" + (f" {effect_text}" if effect_text else ""))
+            shop_open_detail = f"当前金币 {message.get('gold', 0)}，可用槽位 {message.get('shop_slots', 4)}"
+            if effect_text:
+                shop_open_detail = f"{shop_open_detail}，{effect_text}"
+            self._add_feed_item("商店开启", shop_open_detail, tone="accent")
             self._set_phase("商店阶段", "购买道具与天赋，强化下一场对战的拳袋、经济与伤害。")
 
         elif msg_type == "shop_refresh":
@@ -793,7 +830,7 @@ class BattlegroundApp(tk.Tk):
         duel = tk.Frame(card, bg=CARD_BG)
         duel.pack(fill="x")
 
-        def reveal_tile(container, title, choice, item_used):
+        def reveal_tile(container, title, choice, item_used, faction_effect=None):
             tile = tk.Frame(
                 container,
                 bg=PANEL_BG,
@@ -820,10 +857,32 @@ class BattlegroundApp(tk.Tk):
                 wraplength=220,
                 font=("Avenir Next", 10),
             ).pack(anchor="w", pady=(8, 0))
+            if faction_effect:
+                tk.Label(
+                    tile,
+                    text=f"被动：{faction_effect}",
+                    bg=PANEL_BG,
+                    fg=ACCENT,
+                    justify="left",
+                    wraplength=220,
+                    font=("Avenir Next", 10, "bold"),
+                ).pack(anchor="w", pady=(8, 0))
 
-        reveal_tile(duel, "你的出拳", snapshot.get("your_choice"), snapshot.get("item_used_you"))
+        reveal_tile(
+            duel,
+            "你的出拳",
+            snapshot.get("your_choice"),
+            snapshot.get("item_used_you"),
+            snapshot.get("faction_effect_you"),
+        )
         tk.Label(duel, text="VS", bg=CARD_BG, fg=MUTED, font=("Avenir Next", 12, "bold"), padx=10).pack(side="left")
-        reveal_tile(duel, snapshot.get("opponent", "对手"), snapshot.get("opponent_choice"), snapshot.get("item_used_opponent"))
+        reveal_tile(
+            duel,
+            snapshot.get("opponent", "对手"),
+            snapshot.get("opponent_choice"),
+            snapshot.get("item_used_opponent"),
+            snapshot.get("faction_effect_opponent"),
+        )
 
         tk.Label(
             card,
@@ -876,6 +935,34 @@ class BattlegroundApp(tk.Tk):
             wraplength=540,
             font=("Avenir Next", 11),
         ).pack(anchor="w", pady=(6, 0))
+        if snapshot.get("damage_dealt"):
+            tk.Label(
+                card,
+                text=f"你本场造成了 {snapshot.get('damage_dealt', 0)} 点伤害",
+                bg=CARD_BG,
+                fg=TEXT,
+                font=("Avenir Next", 11, "bold"),
+            ).pack(anchor="w", pady=(6, 0))
+        if snapshot.get("faction_effect_you"):
+            tk.Label(
+                card,
+                text=f"你的被动：{snapshot.get('faction_effect_you')}",
+                bg=CARD_BG,
+                fg=ACCENT,
+                justify="left",
+                wraplength=540,
+                font=("Avenir Next", 11, "bold"),
+            ).pack(anchor="w", pady=(6, 0))
+        if snapshot.get("faction_effect_opponent"):
+            tk.Label(
+                card,
+                text=f"对手被动：{snapshot.get('faction_effect_opponent')}",
+                bg=CARD_BG,
+                fg=MUTED,
+                justify="left",
+                wraplength=540,
+                font=("Avenir Next", 10),
+            ).pack(anchor="w", pady=(4, 0))
 
     def _open_guide(self):
         if self.guide_window and self.guide_window.winfo_exists():
@@ -923,6 +1010,7 @@ class BattlegroundApp(tk.Tk):
             ("4. 商店怎么成长", "每个大回合结束后会进入商店。你可以刷新、购买道具或天赋，提升经济、伤害、商店槽位和拳袋能力。"),
             ("5. 经济怎么滚", "每回合都会获得基础金币，还可能拿到连胜/连败奖励和利息收益。合理留钱会让后期更强。"),
             ("6. 联机怎么进房", "房主创建房间后把 IP 与端口发给其他玩家。所有玩家到齐后，房间会自动开始游戏。"),
+            ("7. 阵营被动是什么", "磐岩壁垒每场战败少掉 1 血；迅刃风暴每场首次用剪刀赢下小局时 +1 金；秘纸教团每个商店阶段首刷免费。"),
         )
 
         for title, desc in sections:
@@ -1056,7 +1144,7 @@ class BattlegroundApp(tk.Tk):
         faction_card, faction_body = self._card(
             parent,
             "选择阵营风格",
-            "阵营会出现在大厅、血量榜和局内档案卡中，目前主要影响身份展示与视觉表达。",
+            "阵营会同步到大厅、血量榜和局内档案卡，并附带轻度被动效果。",
         )
         faction_card.pack(fill="x", pady=(0, 18))
 
@@ -1094,6 +1182,16 @@ class BattlegroundApp(tk.Tk):
             tk.Label(card, text=meta["name"], bg=CARD_BG, fg=TEXT, font=("Avenir Next", 15, "bold")).pack(anchor="w")
             tk.Label(card, text=meta["title"], bg=CARD_BG, fg=meta["accent"], font=("Avenir Next", 11, "bold")).pack(anchor="w", pady=(4, 0))
             tk.Label(card, text=meta["style"], bg=CARD_BG, fg=MUTED, font=("Avenir Next", 10, "bold")).pack(anchor="w", pady=(4, 0))
+            tk.Label(card, text=f"被动 · {meta['passive_name']}", bg=CARD_BG, fg=meta["accent"], font=("Avenir Next", 11, "bold")).pack(anchor="w", pady=(8, 0))
+            tk.Label(
+                card,
+                text=meta["passive_short"],
+                bg=CARD_BG,
+                fg=TEXT,
+                justify="left",
+                wraplength=260 if not compact else 620,
+                font=("Avenir Next", 11),
+            ).pack(anchor="w", pady=(4, 0))
             tk.Label(
                 card,
                 text=meta["subtitle"],
@@ -1139,6 +1237,16 @@ class BattlegroundApp(tk.Tk):
         text_col = tk.Frame(row, bg=PANEL_BG)
         text_col.pack(side="left", fill="both", expand=True)
         tk.Label(text_col, text=meta["style"], bg=PANEL_BG, fg=meta["accent"], font=("Avenir Next", 11, "bold")).pack(anchor="w")
+        tk.Label(text_col, text=f"被动 · {meta['passive_name']}", bg=PANEL_BG, fg=meta["accent"], font=("Avenir Next", 11, "bold")).pack(anchor="w", pady=(8, 0))
+        tk.Label(
+            text_col,
+            text=meta["passive_desc"],
+            bg=PANEL_BG,
+            fg=TEXT,
+            justify="left",
+            wraplength=260,
+            font=("Avenir Next", 10),
+        ).pack(anchor="w", pady=(4, 0))
         tk.Label(
             text_col,
             text=meta["subtitle"],
@@ -1147,7 +1255,7 @@ class BattlegroundApp(tk.Tk):
             justify="left",
             wraplength=260,
             font=("Avenir Next", 10),
-        ).pack(anchor="w", pady=(6, 0))
+        ).pack(anchor="w", pady=(8, 0))
         tk.Label(
             text_col,
             text=meta["motto"],
@@ -1260,6 +1368,15 @@ class BattlegroundApp(tk.Tk):
             justify="left",
             font=("Avenir Next", 11, "bold"),
         ).pack(anchor="w", pady=(0, 12))
+        tk.Label(
+            host_body,
+            text=f"阵营被动：{current_faction['passive_name']} · {current_faction['passive_short']}",
+            bg=PANEL_BG,
+            fg=TEXT,
+            justify="left",
+            wraplength=520,
+            font=("Avenir Next", 11),
+        ).pack(anchor="w", pady=(0, 12))
 
         self._action_button(host_body, "创建房间并加入", self._host_game).pack(anchor="w")
 
@@ -1268,24 +1385,33 @@ class BattlegroundApp(tk.Tk):
         self._render_form_row(join_body, "房主端口", self.join_port_var)
         tk.Label(
             join_body,
-            text=f"加入时将携带阵营身份：{current_faction['name']}",
+            text=f"加入时将携带阵营：{current_faction['name']}",
             bg=PANEL_BG,
             fg=current_faction["accent"],
             justify="left",
             font=("Avenir Next", 11, "bold"),
+        ).pack(anchor="w", pady=(0, 12))
+        tk.Label(
+            join_body,
+            text=f"阵营被动：{current_faction['passive_name']} · {current_faction['passive_short']}",
+            bg=PANEL_BG,
+            fg=TEXT,
+            justify="left",
+            wraplength=520,
+            font=("Avenir Next", 11),
         ).pack(anchor="w", pady=(0, 12))
         self._action_button(join_body, "加入联机房间", self._join_game, bg=ACCENT_2).pack(anchor="w")
 
         tips, tips_body = self._card(
             self.content,
             "当前版本说明",
-            "已经支持本地房主、联机加入、阵营视觉资源、战斗 UI、商店 UI 和游戏结束结算。若需要跨公网联机，请确保端口可达。",
+            "已经支持本地房主、联机加入、阵营视觉资源、阵营轻度被动、战斗 UI、商店 UI 和游戏结束结算。若需要跨公网联机，请确保端口可达。",
         )
         tips.pack(fill="x", pady=(18, 0))
 
         for line in (
             "1. 房主先创建房间，把局域网 IP 和端口发给朋友。",
-            "2. 双方可以先在首页选择阵营，阵营会同步到大厅与局内档案。",
+            "2. 双方可以先在首页选择阵营，阵营会同步到大厅与局内档案，并附带轻度被动。",
             "3. 朋友在加入房间里填昵称、IP、端口后连接，满员后自动开局。",
         ):
             tk.Label(
@@ -1688,6 +1814,16 @@ class BattlegroundApp(tk.Tk):
             fg=ACCENT_2,
             font=("Avenir Next", 16, "bold"),
         ).pack(anchor="w")
+        if msg.get("faction_effect_you"):
+            tk.Label(
+                header,
+                text=f"阵营被动：{msg.get('faction_effect_you')}",
+                bg=PANEL_BG,
+                fg=ACCENT,
+                justify="left",
+                wraplength=560,
+                font=("Avenir Next", 11, "bold"),
+            ).pack(anchor="w", pady=(8, 0))
 
         actions = tk.Frame(parent, bg=PANEL_BG)
         actions.pack(fill="x", pady=(0, 14))

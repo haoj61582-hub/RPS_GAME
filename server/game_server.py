@@ -175,18 +175,10 @@ class GameServer:
                     p2.win_streak = 0
                     p2.lose_streak = 0
                 else:
-                    damage = winner.attack
-                    if _has_talent_effect(winner, "double_damage_on_win"):
-                        damage *= 2
-                    loser.health -= damage
                     winner.win_streak += 1
                     winner.lose_streak = 0
                     loser.lose_streak += 1
                     loser.win_streak = 0
-                    if loser.health <= 0:
-                        loser.health = 0
-                        loser.is_eliminated = True
-                        log(f"💀 {loser.name} 被淘汰！", "red")
 
                 _send_state_update(p1, self.game_state.players, "post_match")
                 _send_state_update(p2, self.game_state.players, "post_match")

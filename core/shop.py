@@ -143,8 +143,11 @@ def _build_shop_slots(items, talents, slot_count, player):
     return slots
 
 
-def _refresh_cost(refresh_count):
-    # 第一次刷新 1 金币，之后每次在当前回合递增 1。
+def _refresh_cost(refresh_count, player=None):
+    # 默认第一次刷新 1 金币，之后每次在当前回合递增 1。
+    # 秘纸教团的被动会让本回合第一次刷新免费，后续从 1 金开始递增。
+    if player and getattr(player, "faction", "") == "paper":
+        return refresh_count
     return 1 + refresh_count
 
 def show_shop(player, health_overview=None):
@@ -156,7 +159,7 @@ def show_shop(player, health_overview=None):
     log(f"\n=== 🛒 商店阶段 ===\n{player.name} 当前金币: {player.gold}", "yellow")
 
     while True:
-        next_refresh_cost = _refresh_cost(refresh_count)
+        next_refresh_cost = _refresh_cost(refresh_count, player)
         send_message(clients[player.id], {
             "type": "shop_menu",
             "gold": player.gold,
@@ -173,7 +176,8 @@ def show_shop(player, health_overview=None):
             "offers": current_offers,
             "bag": player.rps_bag,
             "owned_items": [_serialize_item(i) for i in player.items],
-            "owned_talents": player.talents
+            "owned_talents": player.talents,
+            "faction_effect_you": "秘纸教团【策纸采购】本阶段首刷免费" if player.faction == "paper" and refresh_count == 0 else None,
         })
 
         msg = get_message(player.id)
@@ -182,13 +186,15 @@ def show_shop(player, health_overview=None):
         if choice == "exit":
             break
         elif choice == "refresh":
-            cost = _refresh_cost(refresh_count)
+            cost = _refresh_cost(refresh_count, player)
             if player.gold < cost:
                 log(f"❌ 金币不足，刷新需要 {cost} 金币", "red")
             else:
                 player.gold -= cost
                 refresh_count += 1
                 current_offers = _build_shop_slots(items, talents, player.shop_slots, player)
+                if player.faction == "paper" and cost == 0:
+                    log(f"🔮 {player.name} 【秘纸教团】首刷免费生效", "magenta")
                 log(f"🔄 已刷新商店，花费 {cost} 金币", "cyan")
         elif choice.startswith("slot_"):
             try:
@@ -240,7 +246,8 @@ def show_shop(player, health_overview=None):
             "lose_streak": player.lose_streak,
             "your_faction": player.faction,
             "shop_slots": player.shop_slots,
-            "refresh_cost": _refresh_cost(refresh_count),
+            "refresh_cost": _refresh_cost(refresh_count, player),
             "offers": current_offers,
-            "health_overview": health_overview or []
+            "health_overview": health_overview or [],
+            "faction_effect_you": "秘纸教团【策纸采购】本阶段首刷免费" if player.faction == "paper" and refresh_count == 0 else None,
         })
